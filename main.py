@@ -1,7 +1,31 @@
+from fastapi import FastAPI, Request
+import os
+import httpx
+
+app = FastAPI()
+
+RESULTS = {}
+PENDING_TRANSCRIPTIONS = {}
+
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+
+
+@app.post("/register-transcription")
+async def register_transcription(req: Request):
+    body = await req.json()
+    request_id = body.get("request_id")
+    channel_id = body.get("channel_id")
+
+    if request_id and channel_id:
+        PENDING_TRANSCRIPTIONS[request_id] = int(channel_id)
+        print("Registered transcription:", request_id, channel_id)
+
+    return {"status": "ok"}
+
+
 @app.post("/webhook")
 async def deapi_webhook(req: Request):
     payload = await req.json()
-
     print("🔥 WEBHOOK RECEIVED:", payload)
 
     event_type = payload.get("event")
@@ -39,7 +63,6 @@ async def deapi_webhook(req: Request):
     }
 
     channel_id = PENDING_TRANSCRIPTIONS.pop(request_id, None)
-
     print("Channel ID found:", channel_id)
 
     if channel_id and DISCORD_BOT_TOKEN:
@@ -65,8 +88,23 @@ async def deapi_webhook(req: Request):
                         "content": f"✅ **Transcription complete:**\n{transcript[:2000]}"
                     },
                 )
-                print("Discord response status:", resp.status_code)
+                print("Discord response:", resp.status_code)
         except Exception as e:
             print("❌ Error sending Discord message:", e)
 
     return {"status": "ok"}
+
+
+@app.get("/result/{request_id}")
+async def get_result(request_id: str):
+    result = RESULTS.get(request_id)
+
+    if not result:
+        return {"status": "pending"}
+
+    return result
+
+
+@app.get("/")
+async def root():
+    return {"status": "running"}
