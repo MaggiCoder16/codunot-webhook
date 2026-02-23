@@ -31,38 +31,38 @@ async def register_transcription(req: Request):
 async def deapi_webhook(
     request: Request,
     x_deapi_signature: str = Header(None),
-    x_signature: str = Header(None),
 ):
     raw_body = await request.body()
 
     if WEBHOOK_SECRET:
-        sig_header = x_deapi_signature or x_signature or ""
+        timestamp = request.headers.get("x-deapi-timestamp", "")
+        sig_header = x_deapi_signature or ""
 
+        # remove sha256= prefix if present
         if sig_header.startswith("sha256="):
             sig_header = sig_header.replace("sha256=", "")
 
+        signed_payload = f"{timestamp}.{raw_body.decode()}".encode()
+
         expected = hmac.new(
             WEBHOOK_SECRET.encode(),
-            raw_body,
+            signed_payload,
             hashlib.sha256
         ).hexdigest()
 
         if not hmac.compare_digest(expected, sig_header):
-            print("Invalid webhook signature")
+            print("❌ Invalid webhook signature")
             print("Received:", sig_header)
             print("Expected:", expected)
             return {"error": "invalid signature"}
 
-    # -----------------------------
-    # Parse JSON safely
-    # -----------------------------
     try:
         payload = json.loads(raw_body)
     except Exception as e:
         print("❌ JSON parse error:", e)
         return {"status": "error"}
 
-    print("webhook recieved:", payload)
+    print("🔥 WEBHOOK RECEIVED:", payload)
 
     event_type = payload.get("event")
     data = payload.get("data") or payload
@@ -74,16 +74,13 @@ async def deapi_webhook(
     )
 
     if not request_id:
-        print("No request_id found")
+        print("⚠️ No request_id found")
         return {"status": "ack"}
 
     if event_type != "job.completed":
-        print("Ignoring event:", event_type)
+        print("ℹ️ Ignoring event:", event_type)
         return {"status": "ack"}
 
-    # -----------------------------
-    # Extract result
-    # -----------------------------
     result_url = data.get("result_url")
     transcript_text = data.get("text") or data.get("transcription")
 
@@ -94,7 +91,7 @@ async def deapi_webhook(
                 if r.status_code == 200:
                     transcript_text = r.text
         except Exception as e:
-            print("Failed to fetch result_url:", e)
+            print("❌ Failed to fetch result_url:", e)
 
     RESULTS[request_id] = {
         "status": "done",
@@ -119,9 +116,9 @@ async def deapi_webhook(
                         "content": f"✅ **Transcription complete:**\n{message[:1900]}"
                     },
                 )
-                print("Discord status:", resp.status_code)
+                print("Discord response:", resp.status_code)
         except Exception as e:
-            print("send error:", e)
+            print("❌ Discord send error:", e)
 
     return {"status": "ok"}
 
