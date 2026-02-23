@@ -1,42 +1,25 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-import os
-import httpx
-
-app = FastAPI()
-
-RESULTS = {}
-PENDING_TRANSCRIPTIONS = {}
-
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-
-
-@app.post("/register-transcription")
-async def register_transcription(req: Request):
-    body = await req.json()
-    request_id = body.get("request_id")
-    channel_id = body.get("channel_id")
-
-    if request_id and channel_id:
-        PENDING_TRANSCRIPTIONS[request_id] = int(channel_id)
-
-    return {"status": "ok"}
-
-
 @app.post("/webhook")
 async def deapi_webhook(req: Request):
     payload = await req.json()
 
+    print("🔥 WEBHOOK RECEIVED:", payload)
+
     event_type = payload.get("event")
-    data = payload.get("data", {})
+
+    # Support both structures
+    data = payload.get("data") or payload
 
     request_id = (
         data.get("job_request_id")
         or data.get("request_id")
+        or payload.get("request_id")
     )
 
     if event_type != "job.completed" or not request_id:
+        print("⚠️ Ignored event:", event_type, request_id)
         return {"status": "ack"}
+
+    print("✅ Processing completed job:", request_id)
 
     result_url = data.get("result_url")
 
@@ -47,7 +30,7 @@ async def deapi_webhook(req: Request):
                 if r.status_code == 200:
                     data["transcription"] = r.text
         except Exception as e:
-            print("Error fetching result_url:", e)
+            print("❌ Error fetching result_url:", e)
 
     RESULTS[request_id] = {
         "status": "done",
@@ -56,6 +39,8 @@ async def deapi_webhook(req: Request):
     }
 
     channel_id = PENDING_TRANSCRIPTIONS.pop(request_id, None)
+
+    print("Channel ID found:", channel_id)
 
     if channel_id and DISCORD_BOT_TOKEN:
         transcript = (
@@ -73,29 +58,15 @@ async def deapi_webhook(req: Request):
 
         try:
             async with httpx.AsyncClient() as client:
-                await client.post(
+                resp = await client.post(
                     url,
                     headers=headers,
                     json={
                         "content": f"✅ **Transcription complete:**\n{transcript[:2000]}"
                     },
                 )
+                print("Discord response status:", resp.status_code)
         except Exception as e:
-            print("Error sending Discord message:", e)
+            print("❌ Error sending Discord message:", e)
 
     return {"status": "ok"}
-
-
-@app.get("/result/{request_id}")
-async def get_result(request_id: str):
-    result = RESULTS.get(request_id)
-
-    if not result:
-        return {"status": "pending"}
-
-    return result
-
-
-@app.get("/")
-async def root():
-    return {"status": "running"}
