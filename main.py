@@ -19,9 +19,11 @@ async def register_transcription(req: Request):
     body = await req.json()
     request_id = body.get("request_id")
     channel_id = body.get("channel_id")
+
     if request_id and channel_id:
         PENDING_TRANSCRIPTIONS[request_id] = int(channel_id)
         print(f"[Register] {request_id} → {channel_id}")
+
     return {"status": "ok"}
 
 
@@ -31,11 +33,14 @@ async def deapi_webhook(
     x_deapi_signature: str = Header(None),
     x_signature: str = Header(None),
 ):
-
     raw_body = await request.body()
 
     if WEBHOOK_SECRET:
         sig_header = x_deapi_signature or x_signature or ""
+
+        if sig_header.startswith("sha256="):
+            sig_header = sig_header.replace("sha256=", "")
+
         expected = hmac.new(
             WEBHOOK_SECRET.encode(),
             raw_body,
@@ -43,16 +48,21 @@ async def deapi_webhook(
         ).hexdigest()
 
         if not hmac.compare_digest(expected, sig_header):
-            print("❌ Invalid webhook signature:", sig_header, "expected:", expected)
+            print("Invalid webhook signature")
+            print("Received:", sig_header)
+            print("Expected:", expected)
             return {"error": "invalid signature"}
 
+    # -----------------------------
+    # Parse JSON safely
+    # -----------------------------
     try:
         payload = json.loads(raw_body)
     except Exception as e:
-        print("❌ Failed to parse webhook JSON:", e)
+        print("❌ JSON parse error:", e)
         return {"status": "error"}
 
-    print("🔥 WEBHOOK RECEIVED:", payload)
+    print("webhook recieved:", payload)
 
     event_type = payload.get("event")
     data = payload.get("data") or payload
@@ -63,33 +73,39 @@ async def deapi_webhook(
         or payload.get("request_id")
     )
 
-    if event_type != "job.completed" or not request_id:
-        print("⚠️ Ignored event:", event_type, "req_id:", request_id)
+    if not request_id:
+        print("No request_id found")
         return {"status": "ack"}
 
-    result_url = data.get("result_url")
-    text_result = data.get("text") or data.get("transcription")
+    if event_type != "job.completed":
+        print("Ignoring event:", event_type)
+        return {"status": "ack"}
 
-    if result_url and not text_result:
+    # -----------------------------
+    # Extract result
+    # -----------------------------
+    result_url = data.get("result_url")
+    transcript_text = data.get("text") or data.get("transcription")
+
+    if result_url and not transcript_text:
         try:
             async with httpx.AsyncClient() as client:
                 r = await client.get(result_url, timeout=60)
                 if r.status_code == 200:
-                    text_result = r.text
-                    data["transcription"] = text_result
+                    transcript_text = r.text
         except Exception as e:
-            print("❌ Failed to fetch result_url:", e)
+            print("Failed to fetch result_url:", e)
 
     RESULTS[request_id] = {
         "status": "done",
-        "data": data,
-        "result_url": result_url,
-        "text": text_result,
+        "text": transcript_text,
+        "raw": data,
     }
 
     channel_id = PENDING_TRANSCRIPTIONS.pop(request_id, None)
+
     if channel_id and DISCORD_BOT_TOKEN:
-        message_text = text_result or "Transcription complete."
+        message = transcript_text or "Transcription complete."
 
         try:
             async with httpx.AsyncClient() as client:
@@ -99,11 +115,13 @@ async def deapi_webhook(
                         "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
                         "Content-Type": "application/json",
                     },
-                    json={"content": f"✅ **Transcription complete:**\n{message_text[:1900]}"},
+                    json={
+                        "content": f"✅ **Transcription complete:**\n{message[:1900]}"
+                    },
                 )
-                print("✅ Sent Discord message:", resp.status_code)
+                print("Discord status:", resp.status_code)
         except Exception as e:
-            print("❌ Error sending Discord message:", e)
+            print("send error:", e)
 
     return {"status": "ok"}
 
